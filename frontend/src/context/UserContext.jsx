@@ -9,7 +9,7 @@ export const useUser = () => useContext(UserContext);
 
 // IMPORTANT: global axios defaults
 axios.defaults.withCredentials = true; // send cookies
-const serverUrl = 'http://localhost:3001';
+const serverUrl = 'https://resumind-backend.vercel.app';
 axios.defaults.baseURL = serverUrl;
 
 export const UserProvider = ({ children }) => {
