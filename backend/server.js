@@ -14,9 +14,7 @@ const port = process.env.PORT || 3001;
 // Middleware
 app.use(
   cors({
-    // For production, you should replace "http://localhost:5173"
-    // with your frontend's domain from an environment variable.
-    origin: process.env.CLIENT_URL || "http://localhost:5173",
+    origin: "https://resumind.vercel.app",
     credentials: true,
   })
 );

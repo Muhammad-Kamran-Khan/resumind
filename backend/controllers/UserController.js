@@ -11,13 +11,15 @@ import sendEmail from "../helpers/sendEmail.js";
 dotenv.config();
 
 const isProd = process.env.NODE_ENV === "production";
+
+// --- CORRECTED COOKIE OPTIONS ---
 const cookieOptions = {
   path: "/",
   httpOnly: true,
-  maxAge: 30 * 24 * 60 * 60 * 1000,
-  sameSite: isProd ? "none" : "lax",
-  secure: isProd,
-  domain: process.env.COOKIE_DOMAIN || undefined,
+  maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+  sameSite: "none",
+  secure: true,
+  // The 'domain' property has been removed to work with Vercel's subdomains.
 };
 
 export const registerUser = asynchandler(async (req, res) => {
@@ -39,6 +41,7 @@ export const registerUser = asynchandler(async (req, res) => {
     const user = await User.create({ name, email, password });
     const token = generateToken(user._id);
 
+    // This will now use the corrected cookieOptions
     res.cookie("token", token, cookieOptions);
 
     if (user) {
@@ -67,6 +70,8 @@ export const loginUser = asynchandler(async (req, res) => {
     }
 
     const token = generateToken(userExists._id);
+    
+    // This will now use the corrected cookieOptions
     res.cookie("token", token, cookieOptions);
 
     const { _id, name, role, photo, bio, isVerified } = userExists;
@@ -74,7 +79,13 @@ export const loginUser = asynchandler(async (req, res) => {
 });
 
 export const logoutUser = asynchandler(async (req, res) => {
-    res.clearCookie("token", { path: "/", sameSite: cookieOptions.sameSite, secure: cookieOptions.secure, domain: cookieOptions.domain });
+    // We create a new object here to ensure the domain is not present
+    const logoutCookieOptions = {
+        path: "/",
+        sameSite: cookieOptions.sameSite,
+        secure: cookieOptions.secure,
+    };
+    res.clearCookie("token", logoutCookieOptions);
     return res.status(200).json({ message: "User logged out successfully" });
 });
 
