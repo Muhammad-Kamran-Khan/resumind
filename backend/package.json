@@ -29,7 +29,7 @@
     "nodemailer-express-handlebars": "^7.0.0",
     "nodemon": "^3.1.10",
     "path": "^0.12.7",
-    "pdf-parse": "^1.1.1",
+    "pdfjs-dist": "^5.4.54",
     "streamifier": "^0.1.1",
     "url": "^0.11.4",
     "uuid": "^11.1.0"
