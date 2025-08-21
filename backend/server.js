@@ -14,7 +14,7 @@ const port = process.env.PORT || 3001;
 // Middleware
 app.use(
   cors({
-    origin: "https://resumind.vercel.app",
+    origin: "https://resumind-seven.vercel.app",
     credentials: true,
   })
 );
