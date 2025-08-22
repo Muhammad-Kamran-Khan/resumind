@@ -5,17 +5,60 @@ import User from '../models/User.js';
 import cloudinary from '../config/cloudinary.js';
 import streamifier from 'streamifier';
 
-// ========================================================================
-// FINAL, SIMPLIFIED SOLUTION: Use 'pdf-parse', a library built for Node.js
-// ========================================================================
-import pdf from 'pdf-parse';
+/**
+ * Try to dynamically load pdfjs-dist from common entry points.
+ * If found, return a pdfjs object and disable worker for server usage.
+ * Throws error if none found.
+ */
+async function tryLoadPdfJs() {
+  const candidates = [
+    'pdfjs-dist/legacy/build/pdf.mjs',
+    'pdfjs-dist/legacy/build/pdf.js',
+    'pdfjs-dist/es5/build/pdf.js',
+    'pdfjs-dist/build/pdf.js',
+    'pdfjs-dist' // last attempt
+  ];
+
+  let lastErr = null;
+  for (const path of candidates) {
+    try {
+      const mod = await import(path);
+      const pdfjs = mod.default ? mod.default : mod;
+      if (pdfjs && pdfjs.GlobalWorkerOptions) {
+        // disable worker on server
+        pdfjs.GlobalWorkerOptions.disableWorker = true;
+      }
+      return pdfjs;
+    } catch (err) {
+      lastErr = err;
+      // continue to next candidate
+    }
+  }
+  const msg = lastErr && lastErr.message ? lastErr.message : String(lastErr);
+  throw new Error(`Unable to load pdfjs-dist. Last error: ${msg}`);
+}
 
 /**
- * Extracts text from a PDF buffer using the 'pdf-parse' library.
+ * Extracts text from a PDF buffer using the pdfjs-dist library.
+ * It no longer uses a fallback.
  */
 async function extractTextFromPdfBuffer(buffer) {
-  const data = await pdf(buffer);
-  return data.text.trim();
+  // Use pdfjs-dist to extract text. Any errors will be thrown and caught by the caller.
+  const pdfjs = await tryLoadPdfJs();
+
+  const uint8Array = new Uint8Array(buffer);
+
+  const loadingTask = pdfjs.getDocument({ data: uint8Array });
+  const pdfDoc = await loadingTask.promise;
+  let resumeContent = '';
+  const numPages = pdfDoc.numPages || 0;
+  for (let i = 1; i <= numPages; i++) {
+    const page = await pdfDoc.getPage(i);
+    const textContent = await page.getTextContent();
+    const pageText = (textContent.items || []).map(item => item.str ?? item.unicode ?? '').join(' ');
+    resumeContent += pageText + '\n';
+  }
+  return resumeContent.trim();
 }
 
 export const handleResumeUpload = async (req, res) => {
@@ -40,6 +83,11 @@ export const handleResumeUpload = async (req, res) => {
       return res.status(400).json({ error: 'Job title is required.' });
     }
 
+    // ========================================================================
+    // PERFORMANCE ENHANCEMENT: Run Cloudinary upload and text extraction in parallel
+    // ========================================================================
+
+    // 1. Define the two independent promises
     const cloudinaryUploadPromise = new Promise((resolve, reject) => {
       const uploadStream = cloudinary.uploader.upload_stream(
         { resource_type: 'auto', folder: 'resumes' },
@@ -54,6 +102,7 @@ export const handleResumeUpload = async (req, res) => {
 
     const extractTextPromise = extractTextFromPdfBuffer(req.file.buffer);
 
+    // 2. Await both promises concurrently
     const [uploadResult, resumeContent] = await Promise.all([
       cloudinaryUploadPromise,
       extractTextPromise
@@ -61,6 +110,7 @@ export const handleResumeUpload = async (req, res) => {
 
     console.log('✅ Cloudinary upload and text extraction complete.');
 
+    // 3. Generate URLs from the completed upload result
     const pdfUrl = cloudinary.url(uploadResult.public_id, { resource_type: 'raw', secure: true });
     const previewUrl = cloudinary.url(uploadResult.public_id, {
       page: 1,
@@ -74,6 +124,7 @@ export const handleResumeUpload = async (req, res) => {
 
     console.log('✅ Cloudinary: PDF & Preview URLs generated successfully.');
 
+    // 4. Proceed with AI analysis now that we have the resume text
     const instructions = prepareInstructions({ jobTitle, jobDescription, resumeContent });
     const response = await callGeminiWithRetry(instructions);
 
@@ -85,6 +136,7 @@ export const handleResumeUpload = async (req, res) => {
       feedback = { raw: response?.text ?? String(response) };
     }
 
+    // 5. Save the final analysis to the database
     const newAnalysis = new Analysis({
       jobTitle,
       jobDescription,
