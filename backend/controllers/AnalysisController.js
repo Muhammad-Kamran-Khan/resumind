@@ -1,3 +1,5 @@
+import "../polyfills.js";
+
 import { prepareInstructions } from '../utils/analysisUtils.js';
 import { callGeminiWithRetry } from '../services/gemini.js';
 import Analysis from '../models/Analysis.js';
@@ -5,26 +7,20 @@ import User from '../models/User.js';
 import cloudinary from '../config/cloudinary.js';
 import streamifier from 'streamifier';
 
-// ========================================================================
-// FIX: Use a direct, static import that Vercel's bundler can understand.
-// ========================================================================
+// Static import of the legacy pdfjs build (server friendly)
 import * as pdfjsDist from 'pdfjs-dist/legacy/build/pdf.mjs';
+const pdfjs = pdfjsDist?.default ?? pdfjsDist;
 
-// The 'pdfjs' object is now directly available from the import.
-const pdfjs = pdfjsDist.default; 
-
-// Disable the worker for server-side usage.
+// Disable worker for server-side usage.
 if (pdfjs && pdfjs.GlobalWorkerOptions) {
   pdfjs.GlobalWorkerOptions.disableWorker = true;
 }
 
-
 /**
- * Extracts text from a PDF buffer using the statically imported pdfjs-dist.
+ * Extracts text from a PDF buffer using pdfjs-dist.
  */
 async function extractTextFromPdfBuffer(buffer) {
   const uint8Array = new Uint8Array(buffer);
-
   const loadingTask = pdfjs.getDocument({ data: uint8Array });
   const pdfDoc = await loadingTask.promise;
   let resumeContent = '';
@@ -60,11 +56,6 @@ export const handleResumeUpload = async (req, res) => {
       return res.status(400).json({ error: 'Job title is required.' });
     }
 
-    // ========================================================================
-    // PERFORMANCE ENHANCEMENT: Run Cloudinary upload and text extraction in parallel
-    // ========================================================================
-
-    // 1. Define the two independent promises
     const cloudinaryUploadPromise = new Promise((resolve, reject) => {
       const uploadStream = cloudinary.uploader.upload_stream(
         { resource_type: 'auto', folder: 'resumes' },
@@ -79,7 +70,6 @@ export const handleResumeUpload = async (req, res) => {
 
     const extractTextPromise = extractTextFromPdfBuffer(req.file.buffer);
 
-    // 2. Await both promises concurrently
     const [uploadResult, resumeContent] = await Promise.all([
       cloudinaryUploadPromise,
       extractTextPromise
@@ -87,7 +77,6 @@ export const handleResumeUpload = async (req, res) => {
 
     console.log('✅ Cloudinary upload and text extraction complete.');
 
-    // 3. Generate URLs from the completed upload result
     const pdfUrl = cloudinary.url(uploadResult.public_id, { resource_type: 'raw', secure: true });
     const previewUrl = cloudinary.url(uploadResult.public_id, {
       page: 1,
@@ -101,7 +90,6 @@ export const handleResumeUpload = async (req, res) => {
 
     console.log('✅ Cloudinary: PDF & Preview URLs generated successfully.');
 
-    // 4. Proceed with AI analysis now that we have the resume text
     const instructions = prepareInstructions({ jobTitle, jobDescription, resumeContent });
     const response = await callGeminiWithRetry(instructions);
 
@@ -113,7 +101,6 @@ export const handleResumeUpload = async (req, res) => {
       feedback = { raw: response?.text ?? String(response) };
     }
 
-    // 5. Save the final analysis to the database
     const newAnalysis = new Analysis({
       jobTitle,
       jobDescription,
@@ -135,7 +122,6 @@ export const handleResumeUpload = async (req, res) => {
   }
 };
 
-// ... (The getAnalysisById and getAnalysesByUserId functions remain the same)
 export const getAnalysisById = async (req, res) => {
   const { id } = req.params;
   try {
