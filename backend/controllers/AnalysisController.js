@@ -8,28 +8,26 @@ import cloudinary from '../config/cloudinary.js';
 import streamifier from 'streamifier';
 
 /**
- * Dynamically load a working pdfjs-dist module.
- * Tries several possible entry points so this file works across
- * different pdfjs-dist versions/install layouts.
+ * Try to dynamically load pdfjs-dist from common entry points.
+ * If found, return a pdfjs object and disable worker for server usage.
+ * Throws error if none found.
  */
-async function loadPdfJs() {
-  // Try a few common entry points in order of preference
+async function tryLoadPdfJs() {
   const candidates = [
     'pdfjs-dist/legacy/build/pdf.mjs',
     'pdfjs-dist/legacy/build/pdf.js',
     'pdfjs-dist/es5/build/pdf.js',
     'pdfjs-dist/build/pdf.js',
-    'pdfjs-dist' // last-ditch attempt (package main)
+    'pdfjs-dist' // last attempt
   ];
 
   let lastErr = null;
   for (const path of candidates) {
     try {
       const mod = await import(path);
-      // Some packages export default, others use named exports
       const pdfjs = mod.default ? mod.default : mod;
-      // If GlobalWorkerOptions exists, disable worker for server
       if (pdfjs && pdfjs.GlobalWorkerOptions) {
+        // disable worker on server
         pdfjs.GlobalWorkerOptions.disableWorker = true;
       }
       return pdfjs;
@@ -38,41 +36,58 @@ async function loadPdfJs() {
       // continue to next candidate
     }
   }
-
-  throw new Error(
-    'Unable to load pdfjs-dist. Please install pdfjs-dist (npm i pdfjs-dist) or try a different version. Last error: ' +
-      (lastErr && lastErr.message ? lastErr.message : String(lastErr))
-  );
+  const msg = lastErr && lastErr.message ? lastErr.message : String(lastErr);
+  throw new Error(`Unable to load pdfjs-dist. Last error: ${msg}`);
 }
 
 /**
- * Extract full text from an in-memory PDF buffer using pdfjs-dist.
- * Returns a string with concatenated page text.
+ * Try to extract text via pdfjs-dist. If that fails due to missing package,
+ * trying to fallback to pdf-parse.
  */
 async function extractTextFromPdfBuffer(buffer) {
-  const pdfjs = await loadPdfJs();
+  // First try pdfjs-dist
+  try {
+    const pdfjs = await tryLoadPdfJs();
+    
+    // ========================================================================
+    // FIX: Convert Node.js Buffer to Uint8Array for pdfjs-dist
+    // ========================================================================
+    const uint8Array = new Uint8Array(buffer);
 
-  // getDocument returns a loadingTask with a `promise` property in most builds
-  const loadingTask = pdfjs.getDocument({ data: buffer });
-  const pdfDoc = await loadingTask.promise;
+    const loadingTask = pdfjs.getDocument({ data: uint8Array });
+    const pdfDoc = await loadingTask.promise;
+    let resumeContent = '';
+    const numPages = pdfDoc.numPages || 0;
+    for (let i = 1; i <= numPages; i++) {
+      const page = await pdfDoc.getPage(i);
+      const textContent = await page.getTextContent();
+      const pageText = (textContent.items || []).map(item => item.str ?? item.unicode ?? '').join(' ');
+      resumeContent += pageText + '\n';
+    }
+    return resumeContent.trim();
+  } catch (err) {
+    // If the failure is "module not found", try pdf-parse fallback
+    const isModuleNotFound = String(err.message || '').toLowerCase().includes('unable to load pdfjs-dist') ||
+                              String(err.message || '').toLowerCase().includes('cannot find module') ||
+                              String(err.message || '').toLowerCase().includes('cannot find package');
 
-  let resumeContent = '';
-  const numPages = pdfDoc.numPages || 0;
+    if (!isModuleNotFound) {
+      // rethrow unexpected pdfjs errors
+      throw err;
+    }
 
-  for (let i = 1; i <= numPages; i++) {
-    const page = await pdfDoc.getPage(i);
-    const textContent = await page.getTextContent();
-    // map robustly for different pdfjs item shapes
-    const pageText = (textContent.items || [])
-      .map((item) => {
-        // item.str is common; item.unicode sometimes appears; fallback to empty string
-        return item.str ?? item.unicode ?? '';
-      })
-      .join(' ');
-    resumeContent += pageText + '\n';
+    // Attempt fallback with pdf-parse
+    try {
+      const pdfParseMod = await import('pdf-parse');
+      const pdfParse = pdfParseMod.default ? pdfParseMod.default : pdfParseMod;
+      const data = await pdfParse(buffer);
+      return (data && data.text) ? data.text.trim() : '';
+    } catch (fallbackErr) {
+      // Provide clear combined error for logs
+      const combined = `pdfjs error: ${err.message} | pdf-parse fallback error: ${fallbackErr.message}`;
+      throw new Error(combined);
+    }
   }
-
-  return resumeContent.trim();
 }
 
 export const handleResumeUpload = async (req, res) => {
@@ -97,32 +112,35 @@ export const handleResumeUpload = async (req, res) => {
       return res.status(400).json({ error: 'Job title is required.' });
     }
 
-    // 1. Upload buffer to Cloudinary using upload_stream
-    const uploadResult = await new Promise((resolve, reject) => {
+    // ========================================================================
+    // PERFORMANCE ENHANCEMENT: Run Cloudinary upload and text extraction in parallel
+    // ========================================================================
+
+    // 1. Define the two independent promises
+    const cloudinaryUploadPromise = new Promise((resolve, reject) => {
       const uploadStream = cloudinary.uploader.upload_stream(
-        {
-          resource_type: 'auto',
-          folder: 'resumes'
-        },
+        { resource_type: 'auto', folder: 'resumes' },
         (error, result) => {
           if (error) return reject(error);
+          if (!result) return reject(new Error('Cloudinary upload returned no result.'));
           resolve(result);
         }
       );
       streamifier.createReadStream(req.file.buffer).pipe(uploadStream);
     });
 
-    if (!uploadResult) {
-      throw new Error('Cloudinary upload returned no result.');
-    }
+    const extractTextPromise = extractTextFromPdfBuffer(req.file.buffer);
 
-    // 2. Generate Cloudinary URLs (pdf + preview)
-    // Use public_id to create raw/pdf url and a png preview for page 1
-    const pdfUrl = cloudinary.url(uploadResult.public_id, {
-      resource_type: 'raw',
-      secure: true
-    });
+    // 2. Await both promises concurrently
+    const [uploadResult, resumeContent] = await Promise.all([
+      cloudinaryUploadPromise,
+      extractTextPromise
+    ]);
 
+    console.log('✅ Cloudinary upload and text extraction complete.');
+
+    // 3. Generate URLs from the completed upload result
+    const pdfUrl = cloudinary.url(uploadResult.public_id, { resource_type: 'raw', secure: true });
     const previewUrl = cloudinary.url(uploadResult.public_id, {
       page: 1,
       format: 'png',
@@ -135,14 +153,10 @@ export const handleResumeUpload = async (req, res) => {
 
     console.log('✅ Cloudinary: PDF & Preview URLs generated successfully.');
 
-    // 3. Extract text from the uploaded PDF buffer
-    const resumeContent = await extractTextFromPdfBuffer(req.file.buffer);
-
-    // 4. Prepare instructions and call Gemini (or whatever AI service)
+    // 4. Proceed with AI analysis now that we have the resume text
     const instructions = prepareInstructions({ jobTitle, jobDescription, resumeContent });
     const response = await callGeminiWithRetry(instructions);
 
-    // 5. Try to parse response as JSON, otherwise keep raw text
     let feedback;
     try {
       const maybe = response?.text ?? response;
@@ -151,7 +165,7 @@ export const handleResumeUpload = async (req, res) => {
       feedback = { raw: response?.text ?? String(response) };
     }
 
-    // 6. Save analysis
+    // 5. Save the final analysis to the database
     const newAnalysis = new Analysis({
       jobTitle,
       jobDescription,
@@ -164,11 +178,9 @@ export const handleResumeUpload = async (req, res) => {
     await newAnalysis.save();
 
     console.log('✅ Backend: Analysis complete and saved to DB.');
-
-    // 7. Return saved analysis
     return res.status(200).json(newAnalysis);
+
   } catch (error) {
-    // detailed error logging
     console.error('❌ Backend Error during analysis or upload:', error);
     const message = error && error.message ? error.message : String(error);
     return res.status(500).json({ error: `Failed to process resume: ${message}` });

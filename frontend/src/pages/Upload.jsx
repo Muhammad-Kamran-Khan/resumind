@@ -58,7 +58,7 @@ const Upload = () => {
             setStatusText('Analysis complete, redirecting...');
 
             // ⭐ FIX #1: Check for result.id, which matches what the backend sends.
-            const uuid = result?.id;
+            const uuid = result?._id;
             
             if (uuid) {
                 // Navigate to the resume page
