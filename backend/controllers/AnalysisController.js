@@ -1,7 +1,3 @@
-// Import polyfills first so pdfjs-dist won't fail at module-eval time.
-import '../polyfills.js';
-
-import { createRequire } from 'module';
 import { prepareInstructions } from '../utils/analysisUtils.js';
 import { callGeminiWithRetry } from '../services/gemini.js';
 import Analysis from '../models/Analysis.js';
@@ -10,31 +6,16 @@ import cloudinary from '../config/cloudinary.js';
 import streamifier from 'streamifier';
 
 // ========================================================================
-// FINAL, ROBUST FIX: Use createRequire to reliably load the CommonJS
-// version of pdfjs-dist, bypassing ESM import resolution issues.
+// FINAL, SIMPLIFIED SOLUTION: Use 'pdf-parse', a library built for Node.js
 // ========================================================================
-const require = createRequire(import.meta.url);
-const pdfjs = require('pdfjs-dist/build/pdf.cjs');
+import pdf from 'pdf-parse';
 
 /**
- * Extracts text from a PDF buffer using pdfjs-dist.
+ * Extracts text from a PDF buffer using the 'pdf-parse' library.
  */
 async function extractTextFromPdfBuffer(buffer) {
-  const uint8Array = new Uint8Array(buffer);
-
-  // The worker is disabled by default in the CJS build, so we can
-  // directly call getDocument.
-  const loadingTask = pdfjs.getDocument({ data: uint8Array });
-  const pdfDoc = await loadingTask.promise;
-  let resumeContent = '';
-  const numPages = pdfDoc.numPages || 0;
-  for (let i = 1; i <= numPages; i++) {
-    const page = await pdfDoc.getPage(i);
-    const textContent = await page.getTextContent();
-    const pageText = (textContent.items || []).map(item => item.str ?? item.unicode ?? '').join(' ');
-    resumeContent += pageText + '\n';
-  }
-  return resumeContent.trim();
+  const data = await pdf(buffer);
+  return data.text.trim();
 }
 
 export const handleResumeUpload = async (req, res) => {
