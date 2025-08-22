@@ -1,5 +1,3 @@
-// backend/controllers/AnalysisController.js
-
 import { prepareInstructions } from '../utils/analysisUtils.js';
 import { callGeminiWithRetry } from '../services/gemini.js';
 import Analysis from '../models/Analysis.js';
@@ -41,53 +39,26 @@ async function tryLoadPdfJs() {
 }
 
 /**
- * Try to extract text via pdfjs-dist. If that fails due to missing package,
- * trying to fallback to pdf-parse.
+ * Extracts text from a PDF buffer using the pdfjs-dist library.
+ * It no longer uses a fallback.
  */
 async function extractTextFromPdfBuffer(buffer) {
-  // First try pdfjs-dist
-  try {
-    const pdfjs = await tryLoadPdfJs();
-    
-    // ========================================================================
-    // FIX: Convert Node.js Buffer to Uint8Array for pdfjs-dist
-    // ========================================================================
-    const uint8Array = new Uint8Array(buffer);
+  // Use pdfjs-dist to extract text. Any errors will be thrown and caught by the caller.
+  const pdfjs = await tryLoadPdfJs();
 
-    const loadingTask = pdfjs.getDocument({ data: uint8Array });
-    const pdfDoc = await loadingTask.promise;
-    let resumeContent = '';
-    const numPages = pdfDoc.numPages || 0;
-    for (let i = 1; i <= numPages; i++) {
-      const page = await pdfDoc.getPage(i);
-      const textContent = await page.getTextContent();
-      const pageText = (textContent.items || []).map(item => item.str ?? item.unicode ?? '').join(' ');
-      resumeContent += pageText + '\n';
-    }
-    return resumeContent.trim();
-  } catch (err) {
-    // If the failure is "module not found", try pdf-parse fallback
-    const isModuleNotFound = String(err.message || '').toLowerCase().includes('unable to load pdfjs-dist') ||
-                              String(err.message || '').toLowerCase().includes('cannot find module') ||
-                              String(err.message || '').toLowerCase().includes('cannot find package');
+  const uint8Array = new Uint8Array(buffer);
 
-    if (!isModuleNotFound) {
-      // rethrow unexpected pdfjs errors
-      throw err;
-    }
-
-    // Attempt fallback with pdf-parse
-    try {
-      const pdfParseMod = await import('pdf-parse');
-      const pdfParse = pdfParseMod.default ? pdfParseMod.default : pdfParseMod;
-      const data = await pdfParse(buffer);
-      return (data && data.text) ? data.text.trim() : '';
-    } catch (fallbackErr) {
-      // Provide clear combined error for logs
-      const combined = `pdfjs error: ${err.message} | pdf-parse fallback error: ${fallbackErr.message}`;
-      throw new Error(combined);
-    }
+  const loadingTask = pdfjs.getDocument({ data: uint8Array });
+  const pdfDoc = await loadingTask.promise;
+  let resumeContent = '';
+  const numPages = pdfDoc.numPages || 0;
+  for (let i = 1; i <= numPages; i++) {
+    const page = await pdfDoc.getPage(i);
+    const textContent = await page.getTextContent();
+    const pageText = (textContent.items || []).map(item => item.str ?? item.unicode ?? '').join(' ');
+    resumeContent += pageText + '\n';
   }
+  return resumeContent.trim();
 }
 
 export const handleResumeUpload = async (req, res) => {
