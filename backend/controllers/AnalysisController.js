@@ -1,6 +1,7 @@
 // Import polyfills first so pdfjs-dist won't fail at module-eval time.
 import '../polyfills.js';
 
+import { createRequire } from 'module';
 import { prepareInstructions } from '../utils/analysisUtils.js';
 import { callGeminiWithRetry } from '../services/gemini.js';
 import Analysis from '../models/Analysis.js';
@@ -9,10 +10,11 @@ import cloudinary from '../config/cloudinary.js';
 import streamifier from 'streamifier';
 
 // ========================================================================
-// FINAL FIX: Import the CommonJS build directly. This is the most
-// reliable version for Node.js and serverless environments like Vercel.
+// FINAL, ROBUST FIX: Use createRequire to reliably load the CommonJS
+// version of pdfjs-dist, bypassing ESM import resolution issues.
 // ========================================================================
-import * as pdfjs from 'pdfjs-dist/build/pdf.cjs';
+const require = createRequire(import.meta.url);
+const pdfjs = require('pdfjs-dist/build/pdf.cjs');
 
 /**
  * Extracts text from a PDF buffer using pdfjs-dist.
@@ -21,7 +23,7 @@ async function extractTextFromPdfBuffer(buffer) {
   const uint8Array = new Uint8Array(buffer);
 
   // The worker is disabled by default in the CJS build, so we can
-  // directly call getDocument without any extra configuration.
+  // directly call getDocument.
   const loadingTask = pdfjs.getDocument({ data: uint8Array });
   const pdfDoc = await loadingTask.promise;
   let resumeContent = '';
