@@ -5,47 +5,24 @@ import User from '../models/User.js';
 import cloudinary from '../config/cloudinary.js';
 import streamifier from 'streamifier';
 
-/**
- * Try to dynamically load pdfjs-dist from common entry points.
- * If found, return a pdfjs object and disable worker for server usage.
- * Throws error if none found.
- */
-async function tryLoadPdfJs() {
-  const candidates = [
-    'pdfjs-dist/legacy/build/pdf.mjs',
-    'pdfjs-dist/legacy/build/pdf.js',
-    'pdfjs-dist/es5/build/pdf.js',
-    'pdfjs-dist/build/pdf.js',
-    'pdfjs-dist' // last attempt
-  ];
+// ========================================================================
+// FIX: Use a direct, static import that Vercel's bundler can understand.
+// ========================================================================
+import * as pdfjsDist from 'pdfjs-dist/legacy/build/pdf.mjs';
 
-  let lastErr = null;
-  for (const path of candidates) {
-    try {
-      const mod = await import(path);
-      const pdfjs = mod.default ? mod.default : mod;
-      if (pdfjs && pdfjs.GlobalWorkerOptions) {
-        // disable worker on server
-        pdfjs.GlobalWorkerOptions.disableWorker = true;
-      }
-      return pdfjs;
-    } catch (err) {
-      lastErr = err;
-      // continue to next candidate
-    }
-  }
-  const msg = lastErr && lastErr.message ? lastErr.message : String(lastErr);
-  throw new Error(`Unable to load pdfjs-dist. Last error: ${msg}`);
+// The 'pdfjs' object is now directly available from the import.
+const pdfjs = pdfjsDist.default; 
+
+// Disable the worker for server-side usage.
+if (pdfjs && pdfjs.GlobalWorkerOptions) {
+  pdfjs.GlobalWorkerOptions.disableWorker = true;
 }
 
+
 /**
- * Extracts text from a PDF buffer using the pdfjs-dist library.
- * It no longer uses a fallback.
+ * Extracts text from a PDF buffer using the statically imported pdfjs-dist.
  */
 async function extractTextFromPdfBuffer(buffer) {
-  // Use pdfjs-dist to extract text. Any errors will be thrown and caught by the caller.
-  const pdfjs = await tryLoadPdfJs();
-
   const uint8Array = new Uint8Array(buffer);
 
   const loadingTask = pdfjs.getDocument({ data: uint8Array });
@@ -158,6 +135,7 @@ export const handleResumeUpload = async (req, res) => {
   }
 };
 
+// ... (The getAnalysisById and getAnalysesByUserId functions remain the same)
 export const getAnalysisById = async (req, res) => {
   const { id } = req.params;
   try {
